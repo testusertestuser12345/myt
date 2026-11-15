@@ -1,0 +1,54 @@
+ビルドインコマンド
+Merlinに最初から組み込まれていて、ペイロード作成時に選べるコマンド群
+実行のされ方で大きく3種類に分かれている
+①ネイティブ処理（標的内でGoが直接実行＝子プロセスを作らない）
+native.go で処理されるもの：cd pwd ls env ifconfig nslookup rm sdelete touch killprocess。
+これらは新しいプロセスを起動しない（エージェント自身のGoコードが処理する）ので、プロセス生成ベースの検知には引っかかりにくい。ps netstat uptime pipes といった情報収集系も同系統
+② プロセス／シェル実行
+OSの機能を使って外部のコマンドやバイナリを動かすもの。shell（シェル経由）や run（バイナリ直接）。子プロセスが生まれる
+③ メモリ内コード実行
+ディスクに実行ファイルを置かずに、エージェントのメモリ上でコードを動かす系統。executeAssembly executePE executeShellcode memfd など。②のようにわかりやすい子プロセスやファイルが出にくい一方、メモリ領域の属性やプロセス内部の状態に特徴
+
+ビルドインコマンド一覧
+コマンド	使い方	引数	概要
+clear	clear { | all | task Num}	なし / all / task Num	タスクを「cleared」としてマークし、エージェントが拾わないようにする
+cd	cd <directory path>	ディレクトリパス	エージェントのカレントワーキングディレクトリを変更する
+download	download <file path>	ファイルパス	エージェントが動作しているホストからファイルをダウンロードする
+			"Search Files"のDownloadsに保存される
+env	env <method: get,set,showall,unset> <args>	メソッド（get/set/showall/unset）, 引数	環境変数の取得・一覧・設定を行う
+			env showall — 全環境変数を一覧表示（引数不要）
+			env get <NAME> — 指定した変数の値を取得（例：env get PATH）
+			env set <NAME> <VALUE> — 変数を設定（例：env set HTTP_PROXY http://10.0.0.1:8080）
+			env unset <NAME> — 変数を削除（例：env unset HTTP_PROXY）
+			
+exit	exit	なし	エージェントに動作終了・終了を指示する
+help	help [command]	コマンド名（任意）	コマンドの詳細情報、または全コマンドの概要を表示する
+ifconfig	ifconfig	なし	すべてのネットワークインターフェースを列挙する
+ja3	ja3 <ja3string>	JA3文字列	入力したJA3文字列から導出したクライアントでサーバーと通信する（※サーバーが対応している必要あり）
+killdate	killdate <epoch date/time>	Unixエポックタイムスタンプ	エージェントが動作を終了する日時を指定する
+		例　202611200900
+killprocess	killprocess <PID>	プロセスID	指定したPIDの実行中プロセスを終了する
+ls	ls <directory path>	ディレクトリパス	Goのネイティブコマンドでディレクトリの内容を一覧表示する 隠しファイル・フォルダ含め表示される
+maxretry	maxretry <number>	回数	エージェントが終了するまでにチェックイン失敗を許容する最大回数
+memfd	memfd <executable name> <args>	実行ファイル名, 引数	memfd_create APIで実行ファイルを匿名ファイルとしてRAMにロードし実行、結果を返す
+nslookup	nslookup <hostname1> <hostname2>...	ホスト名/IP（複数可）	Goのネイティブコマンドでホスト名やIPを名前解決する
+parrot	parrot <tls client>	TLSクライアント名	utlsライブラリのTLSクライアントを模倣する（例：HelloChrome_Auto, HelloFirefox_55）
+pwd	pwd	なし	カレントディレクトリを表示する
+rm	rm <file path>	ファイルパス	Goのネイティブコマンドでファイルを削除する
+run	run <arg1> <arg2>...	実行引数（複数可）	指定した引数で実行ファイルを実行し結果を返す
+sdelete	sdelete <file path>	ファイルパス	ファイルを安全に（完全）削除する
+shell	shell <arg1> <arg2>...	コマンド文字列/引数	OS標準のシェルでコマンドを実行する
+skew	skew <amount>	量	エージェントのコールバック間のスキュー（ジッター）を変更する
+sleep	sleep <time>	時間	チェックイン間のスリープ時間を変更する　３秒の場合⇒3s
+socks	socks <action> <port>	アクション, ポート	このコールバック経由でSOCKS5リスナーを開始・停止する
+		
+ssh	ssh <username> <password> <host:port> <executable> [<arguments>]	ユーザー名, パスワード, ホスト:ポート, 実行ファイル, 引数（任意）	SSHで対象ホストに接続しコマンドを実行、結果を返す
+			対象ホストにログインしたことがある必要がある
+timestomp	timeStomp <source filepath> <destination filepath>	元ファイルパス, 先ファイルパス	ファイルの作成日時タイムスタンプを別ファイルにコピーする
+upload	upload <source file> <destination file path>	元ファイル, 配置先パス	エージェントが動作しているホストにファイルをアップロードする
+		
+
+
+
+
+
