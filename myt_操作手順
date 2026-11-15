@@ -1,0 +1,94 @@
+mythic install 
+cd ~
+git clone https://github.com/its-a-feature/Mythic.git
+cd Mythic
+
+sudo ./install_docker_kali.sh  
+sudo make
+
+起動
+sudo ./mythic-cli start
+
+ログイン情報の確認
+sudo ./mythic-cli config get MYTHIC_ADMIN_USER
+sudo ./mythic-cli config get MYTHIC_ADMIN_PASSWORD
+
+エージェント/C2プロファイルの追加
+sudo ./mythic-cli install github https://github.com/MythicAgents/poseidon
+sudo ./mythic-cli install github https://github.com/MythicAgents/merlin
+
+sudo ./mythic-cli install github https://github.com/MythicC2Profiles/http
+sudo ./mythic-cli install github https://github.com/MythicC2Profiles/tcp
+
+
+Merlin（Mythic）に自作コマンドを追加する手順
+編集するファイル
+/home/kali/Mythic/InstalledServices/merlin
+sudo vim agent-fork/commands/native.go （case １つ） 編集
+sudo vim container/commands/socketspy.go  定義新規
+sudo vim container/commands/commands.go 一覧にhello()を登録 編集（1行）
+
+docker-compose.yml の merlin サービスを、ghcr.io イメージ → ローカルビルドに変更
+sudo sed -i 's|image: ghcr.io/mythicagents/merlin:v2.5.1|build:\n      context: /home/kali/Mythic/InstalledServices/merlin\n      dockerfile: Dockerfile\n    image: merlin:local|' ~/Mythic/docker-compose.yml
+  
+grep -n -A7 "container_name: merlin" ~/Mythic/docker-compose.yml
+ 
+sed -n '345p;386,392p' ~/Mythic/docker-compose.yml | cat -A
+
+sudo sed -i \
+	 -e 's|^      context: /home/kali/Mythic/InstalledServices/merlin$|          context: /home/kali/Mythic/InstalledServices/merlin|' \
+	 -e 's|^      dockerfile: Dockerfile$|          dockerfile: Dockerfile|' \
+	 -e 's|^    image: merlin:local$|        image: merlin:local|' \
+	 ~/Mythic/docker-compose.yml
+
+
+確認コマンド
+grep -nE "merlin:local|context: .*/merlin$|ghcr.io/mythicagents/merlin" ~/Mythic/docker-compose.yml 
+# merlin:local と context が出て、ghcr.io が消えていればOK
+
+（merlin-agent）のコピーを、ビルドに含まれる場所へ置く
+cd ~/Mythic/InstalledServices/merlin 
+sudo git clone https://github.com/Ne0nd0g/merlin-agent agent-fork
+
+agent/go.mod の末尾に1行足す
+# 1) ファイルの場所を確認（まず存在チェック）
+ls -l ~/Mythic/InstalledServices/merlin/agent/go.mod
+
+# 2) 末尾に replace 行を追記（sudo tee -a で追記）
+echo 'replace github.com/Ne0nd0g/merlin-agent/v2 => ../agent-fork' \
+  | sudo tee -a ~/Mythic/InstalledServices/merlin/agent/go.mod
+
+# 3) ちゃんと入ったか確認（末尾に出ればOK）
+tail -n 5 ~/Mythic/InstalledServices/merlin/agent/go.mod
+
+
+コマンドの追加
+①agent-fork/commands/native.go の switch cmd.Command { の中に追記
+② 定義を足す  定義ファイル container/commands/hello.go（新規作成）
+③一覧に登録 container/commands/commands.go の Commands() の append 一覧に hello() を追加
+
+ビルド＆入れ替え起動
+ビルドするたびに下記のコマンド実行
+sudo sed -i 's|image: ghcr.io/mythicagents/merlin:v2.5.1|build:\n          context: /home/kali/Mythic/InstalledServices/merlin\n          dockerfile: Dockerfile\n        image: merlin:local|' ~/Mythic/docker-compose.yml
+  
+  
+grep -nE "merlin:local|ghcr.io/mythicagents/merlin" ~/Mythic/docker-compose.yml
+→ merlin:localが出て、ghcr.ioが消えていればOK。
+
+ コンテナエラー確認
+sudo docker logs --tail 80 merlin
+       
+       
+マーリンビルド
+sudo sed -i 's|image: ghcr.io/mythicagents/merlin:v2.5.1|build:\n          context: /home/kali/Mythic/InstalledServices/merlin\n          dockerfile: Dockerfile\n        image: merlin:local|' ~/Mythic/docker-compose.yml
+
+
+
+cd ~/Mythic
+sudo docker compose build merlin                       # ← merlin:local を実際に作る（数分かかれば本物）
+sudo docker compose up -d --force-recreate merlin      # ← 古いコンテナを捨てて新イメージで作り直す
+
+# 確認：ここが merlin:local に変われば成功
+sudo docker ps --format '{{.Names}}\t{{.Image}}' | grep merlin
+
+
