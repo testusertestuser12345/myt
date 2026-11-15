@@ -1,0 +1,60 @@
+１　概要
+Poseidonは、Mythicフレームワーク向けのクロスプラットフォーム post-exploitationエージェントです。Go（Golang）で書かれていて、主にLinuxとmacOSを対象にしているのが大きな特徴です。単一バイナリで動き、複数のC2プロファイル（HTTP系やwebsocketなど）に対応します。Mythicネイティブのエージェントとして開発されてきた経緯があり、特にmacOS環境での post-ex 機能が充実している
+
+
+２　ビルドインコマンド
+コマンド	使い方	主な引数	概要
+cat	cat [file path]	[file path]（ファイルパス）	指定したファイルの中身を表示する
+cd	cd -path [new directory]	-path [new directory]（移動先ディレクトリ）	作業ディレクトリを変更する（~ は使用不可）
+clear	clear { | all | task Num}	all, task Num	エージェントが取得しないようにタスクを「クリア済み」にマークする
+chmod	chmod -path myfile -mode 0755	-path, -mode	ファイルのパーミッションを変更する
+config	config	なし	現在の設定とホスト情報を確認する
+cp	cp -source 'path' -destination 'path'	-source, -destination	ファイルをコピーする
+curl	curl -url [URL] -method [GET/POST] ...	-url, -method, -headers など	単一のWebリクエストを実行する
+curl_env_clear	curl_env_clear -clearEnv TOKEN ...	-clearEnv [変数名]	以降のcurlリクエストで使用する環境変数をクリアする
+curl_env_get	curl_env_get	なし	以降のcurlリクエストで使用する環境変数を取得する
+curl_env_set	curl_env_set -setEnv TOKEN=xxx ...	-setEnv [変数=値]	以降のcurlリクエストで使用する環境変数をセットする
+download	download [path]	[path]（ターゲット上のファイルパス）	ターゲットからファイルをダウンロードする
+download_bulk	download_bulk -paths [path] -compress	-paths, -compress	複数のファイルやフォルダをダウンロードする（ZIP圧縮可能）
+drives	drives	なし	Linuxホストのマウント済みドライブ情報を取得する
+exit	exit	なし	現在のセッションを終了し、エージェントを停止（kill）する
+getenv	getenv	なし	現在の環境変数をすべて取得する
+getuser	getuser	なし	現在のユーザーコンテキストに関する情報を取得する
+help	help [command]	[command]（オプション）	特定のコマンドの詳細、または全コマンドのヘルプを表示する
+head	head -path file.txt -lines 5	-path, -lines	ファイルの先頭から指定行数を読み取る
+ifconfig	ifconfig	なし	すべてのIPアドレス情報を取得する
+jobkill	jobkill [JOB-ID]	[JOB-ID]	実行中のジョブを指定して停止する
+jobs	jobs	なし	実行中・停止可能なジョブの一覧を表示する
+keylog	keylog	なし	Linux上でroot権限としてキーストロークを記録する
+keys	keys	なし	Linuxのキーリング（keyring）を操作する
+kill	kill [pid]	[pid]（プロセスID）	プロセスIDを指定してプロセスを強制終了する
+link_tcp	link_tcp {IP | Host} {port}	IP/ホスト名, ポート番号	TCP経由で別のエージェントにリンクする
+link_webshell	link_webshell	なし	webshell P2Pプロファイルを使用してエージェントにリンクする
+ls	ls -path path -depth 1	-path, -depth	ディレクトリ内のコンテンツを一覧表示する（再帰深度指定可）
+mkdir	mkdir [path]	[path]	新しいディレクトリを作成する
+mv	mv -source 'path' -destination 'path'	-source, -destination	ファイルを移動（リネーム）する
+portscan	portscan	IPとポートのレンジ指定可能	ホストのオープンポートスキャンを実行する
+		
+print_c2	print_c2	なし	現在のC2の機能と設定を表示する
+print_p2p	print_p2p	なし	現在のP2P接続情報を表示する
+ps	ps [regex]	[regex]（オプション）	プロセス一覧を取得する（正規表現によるフィルタリング可能）
+pty	pty	なし	インラクティブなPTY（擬似端末）を開く
+			Bash_historyにコマンド履歴が保存される
+pwd	pwd	なし	現在の作業ディレクトリを表示する
+rm	rm [path]	[path]	ファイルやディレクトリを削除する
+rpfwd	rpfwd	なし	リバースポートフォワーディングを開始または停止する
+run	run -path [binary] -args arg1	-path, -args	ディスク上のバイナリに引数を渡して実行する
+setenv	setenv [param] [value]	[param], [value]	任意の環境変数を設定する
+shell	shell	なし	/bin/sh 経由で単一のシェルコマンドを実行する
+shell_config	shell_config -shell /bin/zsh	-shell	shell コマンドの動作環境（シェル種類）を設定する
+sleep	sleep {interval} [jitter%]	{interval}, [jitter%]	エージェントのチェックイン間隔（スリープ）を更新する
+socks	socks	なし	SOCKS5プロキシの開始または停止を行う
+ssh	ssh	なし	認証情報を使用してホストにSSH接続し、PTYを開く
+sshauth	sshauth	なし	認証情報を使用してリモートホストへのSSH接続やSCPを行う
+tail	tail -path file.txt -lines 5	-path, -lines	ファイルの末尾から指定行数を読み取る
+triagedirectory	triagedirectory [path]	[path]	ディレクトリ内から興味深い（有用な）ファイルを効率的に探索する
+unlink_tcp	unlink_tcp	なし	TCP接続のリンクを解除する
+unlink_webshell	unlink_webshell	なし	webshell接続のリンクを解除する
+unsetenv	unsetenv [param]	[param]	指定した環境変数を削除する
+update_c2	update_c2	なし	ポセイドン内のC2コンポーネントをアップデートする
+upload	upload	なし	ターゲットへファイルをアップロードする
