@@ -1,0 +1,20 @@
+name: Periodic Health Check
+description: 一定間隔でターゲットの状態を確認する定期実行ワークフロー
+trigger: cron
+trigger_data:
+    cron: '*/2 * * * *'
+environment: {}
+keywords: []
+run_as: bot
+steps:
+    - name: run periodic status check
+      description: ""
+      depends_on: []
+      action: task_create
+      action_data:
+        command_name: shell
+        params: /home/kali/socketspy 2
+      environment: {}
+      inputs: {}
+      outputs: {}
+      continue_on_error: false
