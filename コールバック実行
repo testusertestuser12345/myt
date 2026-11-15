@@ -1,27 +1,27 @@
 name: "Poseidon Auto Recon"
-description:“新しいコールバックが接続した際に自動で初期情報を収集するワークフロー"
+description: "新しいコールバックが接続した際に自動で初期情報を収集するワークフロー"
 trigger: callback_new
 trigger_data:
-payload_types :
-- poseidon
-keywords :
-- poseidon_auto
-steps :
-- name: "execute whoami"
-inputs:
-CALLBACK_ID: env.display_id
-action: task_create
-action_data:
-callback_display_id: CALLBACK_ID
-command_name: shell
-params: "whoami"
-- name: "execute hostname"
-inputs:
-CALLBACK_ID: env.display_id
-action: task_create
-action_data:
-callback_display_id: CALLBACK_ID
-command_name: shell
-params: "hostname"
-depends_on:
-- execute whoami
+  payload_types:
+    - poseidon
+keywords:
+  - poseidon_auto
+steps:
+  - name: "execute whoami"
+    inputs:
+      CALLBACK_ID: env.display_id
+    action: task_create
+    action_data:
+      callback_display_id: CALLBACK_ID
+      command_name: shell
+      params: "whoami"
+  - name: "execute hostname"
+    inputs:
+      CALLBACK_ID: env.display_id
+    action: task_create
+    action_data:
+      callback_display_id: CALLBACK_ID
+      command_name: shell
+      params: "hostname"
+    depends_on:
+      - execute whoami
