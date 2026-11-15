@@ -1,0 +1,82 @@
+package commands
+
+import (
+	"fmt"
+	"strconv"
+
+	structs "github.com/MythicMeta/MythicContainer/agent_structs"
+	"github.com/MythicMeta/MythicContainer/logging"
+
+	"github.com/Ne0nd0g/merlin-message/jobs"
+)
+
+func socketSpy() structs.Command {
+	attr := structs.CommandAttribute{
+		SupportedOS: []string{structs.SUPPORTED_OS_LINUX},
+	}
+
+	// パラメータ：タイムアウト秒数（timeout）
+	timeoutParam := structs.CommandParameter{
+		Name:             "timeout",
+		ModalDisplayName: "Timeout (sec)",
+		CLIName:          "timeout",
+		ParameterType:    structs.COMMAND_PARAMETER_TYPE_NUMBER,
+		Description:      "Timeout in seconds to run socketspy (e.g. 30)",
+		ParameterGroupInformation: []structs.ParameterGroupInfo{
+			{ParameterIsRequired: true, GroupName: "Default", UIModalPosition: 0},
+		},
+	}
+
+	command := structs.Command{
+		Name:                           "socketspy",
+		NeedsAdminPermissions:          false, // root権限不要！
+		HelpString:                     "socketspy 30",
+		Description:                    "Real-time network traffic spy with PID and CMD (DaiconHacker/SocketSpy style)",
+		Version:                        0,
+		Author:                         "@you",
+		MitreAttackMappings:            []string{"T1049"},
+		ScriptOnlyCommand:              false,
+		CommandAttributes:              attr,
+		CommandParameters:              []structs.CommandParameter{timeoutParam},
+		TaskFunctionCreateTasking:      socketSpyCreateTask,
+		TaskFunctionParseArgString:     taskFunctionParseArgString,
+		TaskFunctionParseArgDictionary: taskFunctionParseArgDictionary,
+	}
+	return command
+}
+
+func socketSpyCreateTask(task *structs.PTTaskMessageAllData) (resp structs.PTTaskCreateTaskingMessageResponse) {
+	pkg := "mythic/container/commands/socketspy/socketSpyCreateTask()"
+	resp.TaskID = task.Task.ID
+
+	timeout, err := task.Args.GetNumberArg("timeout")
+	if err != nil {
+		err = fmt.Errorf("%s: error getting 'timeout': %s", pkg, err)
+		resp.Error = err.Error()
+		resp.Success = false
+		logging.LogError(err, "returning with error")
+		return
+	}
+
+	timeoutStr := strconv.Itoa(int(timeout))
+
+	job := jobs.Command{
+		Command: task.Task.CommandName,
+		Args:    []string{timeoutStr},
+	}
+
+	mythicJob, err := ConvertMerlinJobToMythicTask(job, jobs.NATIVE)
+	if err != nil {
+		err = fmt.Errorf("%s: error converting job: %s", pkg, err)
+		resp.Error = err.Error()
+		resp.Success = false
+		logging.LogError(err, "returning with error")
+		return
+	}
+
+	task.Args.SetManualArgs(mythicJob)
+
+	resp.DisplayParams = &timeoutStr
+	resp.Success = true
+	return
+}
