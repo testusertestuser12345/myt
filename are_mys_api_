@@ -1,0 +1,280 @@
+C2エージェントが実行するコマンドは、ユーザーの対話ログインシェルを通らず直接実行されることが多いため、標的の~/.bash_historyのようなシェル履歴には基本的に残りません
+
+なぜ標的にコマンド履歴が残らないのか（実装で確認）
+Merlinのshellコマンドの実装（merlin-agent/commands/shell_linux.go）を見ると、実行はこうなっています
+cmd := exec.Command("/bin/sh", append([]string{"-c"}, strings.Join(args, " "))...)
+
+sh -c は非対話(non-interactive)シェルの一発起動です。~/.bash_historyのような履歴ファイルは、対話(interactive)シェルがセッション終了時に書き出す仕組み（HISTFILE/HISTSIZEで制御）で、非対話の一発実行はこの履歴機構を一切使いません。
+しかも毎回短命なシェルプロセスが起動→即終了するだけで、ユーザーのログインシェルを通りません。
+
+一方で、Poseidonはptyコマンドを持っています。なので「対話型セッションの痕跡」を検証したいなら、Merlinでは不可、Poseidonを使うのが答えです
+
+アップロード
+、基準は「Mythicサーバーが動いている端末」ではなく「UIを表示しているブラウザの端末」で
+手元のKaliにあるファイルを、UIのダイアログで選ぶ
+→ Mythicサーバー（コンテナ）に取り込まれる
+→ 標的へ送られる
+
+
+MythicのPythonスクリプティングAPIは、「MythicをPythonプログラムから操作する」ための公式パッケージ
+
+前提：どんなものか
+mythicというPythonパッケージで、Mythicサーバーに接続して操作します
+**非同期（async）**で動くので、コードはasync def＋awaitの形で書きます（おまじないと思ってOK）
+
+ステップ1：インストール
+あなたのMythicはv3.4.36なので、対応版を入れます（Kali上で）。
+
+python3 -m pip install 'mythic>=0.3.0rc8'
+
+ステップ2：管理者パスワードを確認
+cd ~/Mythic
+sudo ./mythic-cli config | grep -i admin_password
+ステップ3：ファイルを載せるスクリプト
+
+stage_file.pyとして保存します
+
+単一ファイル
+import asyncio
+from mythic import mythic
+
+async def main():
+    # 1) Mythicにログイン
+    client = await mythic.login(
+        server_ip="127.0.0.1",
+        server_port=7443,
+        username="mythic_admin",
+        password="ここに管理者パスワード",   # ステップ2で確認した値
+        ssl=True,
+    )
+
+    # 2) 載せたいローカルファイルを読む
+    with open("/home/kali/tools/myscript.sh", "rb") as f:   # ←パスは自分のに変更
+        contents = f.read()
+
+    # 3) Mythicに登録（＝ストアに載せる）
+    file_uuid = await mythic.register_file(
+        mythic=client,
+        filename="myscript.sh",
+        contents=contents,
+    )
+    print("登録完了！ file UUID =", file_uuid)
+
+asyncio.run(main())
+
+フォルダごと
+
+import asyncio
+import os
+from mythic import mythic
+
+FOLDER = "/home/kali/tools/myfolder"   # ←載せたいフォルダ
+
+async def main():
+    client = await mythic.login(
+        server_ip="127.0.0.1",
+        server_port=7443,
+        username="mythic_admin",
+        password="ここに管理者パスワード",
+        ssl=True,
+    )
+
+    results = {}
+    for root, dirs, files in os.walk(FOLDER):
+        for name in files:
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, FOLDER)   # フォルダ内の相対パス
+            with open(path, "rb") as f:
+                contents = f.read()
+            file_uuid = await mythic.register_file(
+                mythic=client,
+                filename=rel,          # 相対パスを名前にして構造を残す
+                contents=contents,
+            )
+            results[rel] = file_uuid
+            print("登録:", rel, "->", file_uuid)
+
+    print("\n完了：", len(results), "個のファイルを登録しました")
+
+asyncio.run(main())
+
+実行：
+python3 stage_folder.py
+各ファイルが「相対パス → UUID」で登録され、最後に合計が出ます。UIの「Search Files」に全部出てくれば成功です。
+
+
+
+
+
+アーセナル
+
+docker compose yml
+
+services:
+  arsenal:
+    image: nginx:stable
+    container_name: lab-arsenal
+    volumes:
+      - ./share:/srv/share:ro                              # ← ホストの共有フォルダをマウント
+      - ./arsenal.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./.htpasswd:/etc/nginx/.htpasswd:ro
+    networks:
+      labnet4:
+        ipv4_address: 172.33.0.10      # ← 振ったIP
+    restart: unless-stopped
+
+networks:
+  labnet4:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.33.0.0/24
+
+arsenal.conf
+server {
+    listen 80;
+    server_name _;
+
+    # ノーオース：パスワードなしで取得
+    location /pub/ {
+        alias /srv/share/;
+        autoindex on;
+    }
+
+    # オース：Basic認証つきで取得（平文HTTPでOK）
+    location /secure/ {
+        alias /srv/share/;
+        autoindex on;
+        auth_basic "arsenal";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+    }
+}
+
+# apache2-utils がある場合（-b でパスワードも一緒に指定）
+htpasswd -bc ./.htpasswd user password
+
+# apache2-utils が無い場合（openssl で代用）
+printf "user:$(openssl passwd -apr1 password)\n" > ./.htpasswd
+
+# オース（user / password）
+curl -u user:password http://172.33.0.10/secure/myscript.sh -o myscript.sh
+
+# ノーオース（変更なし）
+curl http://172.33.0.10/pub/myscript.sh -o myscript.sh
+
+
+
+ダミー
+#!/bin/bash
+
+# --- Configuration ---
+DUMMY_DIR="./dummy"             # Directory to store dummy files
+FILE_SIZE="10M"                 # File size (e.g., 10M, 100K, 1G)
+NUM_FILES=3                     # Number of dummy files to create
+NUM_PROCESSES=2                 # Number of dummy processes to launch
+SLEEP_TIME=3600                 # Process lifetime in seconds
+
+echo "=== Starting Dummy Environment Setup ==="
+
+# 1. Create dummy directory
+mkdir -p "$DUMMY_DIR"
+echo "[+] Created directory: $DUMMY_DIR"
+
+# 2. Create dummy files
+echo "[+] Generating dummy files..."
+for i in $(seq 1 $NUM_FILES); do
+    filename="$DUMMY_DIR/dummy_file_$i.bin"
+    # Read random data from /dev/urandom to create a file of specified size
+    dd if=/dev/urandom of="$filename" bs=1 count=0 seek="$FILE_SIZE" status=none
+    echo "  - Created: $filename (Size: $FILE_SIZE)"
+done
+
+# 3. Create dummy processes with custom names
+echo "[+] Launching dummy processes in background..."
+PIDS=()
+for i in $(seq 1 $NUM_PROCESSES); do
+    # Use 'exec -a' to rename the process to "dummy_process_N"
+    (
+      exec -a "dummy_process_$i" sleep "$SLEEP_TIME"
+    ) &
+    pid=$!
+    PIDS+=($pid)
+    echo "  - Started: PID $pid (dummy_process_$i)"
+done
+
+echo ""
+echo "=== Setup Complete ==="
+echo "- Created Process IDs (PIDs): ${PIDS[*]}"
+echo "- Dummy Files Location: $DUMMY_DIR"
+echo ""
+echo "【How to Check】"
+echo "To check running processes : ps aux | grep dummy_process"
+echo "To check created files     : ls -lh $DUMMY_DIR"
+echo ""
+echo "【Cleanup Commands】"
+echo "To stop all dummy processes: pkill -f \"dummy_process\""
+echo "To delete dummy directory  : rm -rf $DUMMY_DIR"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ルータ用
+
+#!/bin/bash
+
+# --- Configuration ---
+DUMMY_DIR="./dummy"             # Directory to store dummy files
+FILE_SIZE="10M"                 # File size (e.g., 10M, 100K, 1G)
+NUM_FILES=3                     # Number of dummy files to create
+NUM_PROCESSES=2                 # Number of dummy processes to launch
+SLEEP_TIME=3600                 # Process lifetime in seconds
+
+echo "=== Starting Dummy Environment Setup ==="
+
+# 1. Create dummy directory
+mkdir -p "$DUMMY_DIR"
+echo "[+] Created directory: $DUMMY_DIR"
+
+# 2. Create dummy files
+echo "[+] Generating dummy files..."
+for i in $(seq 1 $NUM_FILES); do
+    filename="$DUMMY_DIR/dummy_file_$i.bin"
+    # Read random data from /dev/urandom to create a file of specified size
+    dd if=/dev/urandom of="$filename" bs=1 count=0 seek="$FILE_SIZE" status=none
+    echo "  - Created: $filename (Size: $FILE_SIZE)"
+done
+
+# 3. Create dummy processes
+echo "[+] Launching dummy processes in background..."
+PIDS=()
+for i in $(seq 1 $NUM_PROCESSES); do
+    # Launch sleep in the background
+    sleep "$SLEEP_TIME" &
+    pid=$!
+    PIDS+=($pid)
+    echo "  - Started: PID $pid (sleep)"
+done
+
+echo ""
+echo "=== Setup Complete ==="
+echo "- Created Process IDs (PIDs): ${PIDS[*]}"
+echo "- Dummy Files Location: $DUMMY_DIR"
+echo ""
+echo "【How to Check】"
+echo "To check running processes : ps aux | grep sleep"
+echo "To check created files     : ls -lh $DUMMY_DIR"
+echo ""
+echo "【Cleanup Commands】"
+echo "To stop all dummy processes: pkill -f \"sleep $SLEEP_TIME\""
+echo "To delete dummy directory  : rm -rf $DUMMY_DIR"
