@@ -1,0 +1,132 @@
+python3 -m venv v && source v/bin/activate && pip install mythic
+
+
+pip3 install 'mythic<0.3' --break-system-packages
+
+Mythic 3.x向けに pip3 install 'mythic<0.3' --break-system-packages のように古い系に固定してください（>=0.3 は Mythic 4.0 用）。
+
+
+cd ~/Mythic
+sudo ./mythic-cli config get | grep -iE "ADMIN_USER|ADMIN_PASSWORD|SERVER_PORT"
+
+
+コード
+
+#!/usr/bin/env python3
+"""
+Change the IP-column label of Mythic callbacks.
+
+Usage:
+  Single entry via arguments:
+      python3 rename_ip.py <callback_id> <name>
+      example: python3 rename_ip.py 5 jump-box
+
+  Multiple entries via text file (one "id name" per line):
+      python3 rename_ip.py -f names.txt
+
+  names.txt example:
+      5 jump-box
+      6 web-dmz
+      7 dc01
+      # lines starting with # are ignored; names may contain spaces (e.g. 8 my label)
+
+Only the "ips" field (the IP column) is updated. The description is left untouched.
+For each change it prints the before and after value.
+"""
+
+import asyncio
+import argparse
+from mythic import mythic
+
+# ========= replace with values from: sudo ./mythic-cli config get =========
+USERNAME = "mythic_admin"
+PASSWORD = "CHANGE_ME"
+SERVER_IP = "127.0.0.1"
+SERVER_PORT = 7443
+
+
+def parse_line(line: str):
+    """Turn 'id name' into (id, name). Blank/comment lines return None."""
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    parts = line.split()
+    if len(parts) < 2:
+        raise ValueError(f"invalid format (expected 'id name'): {line!r}")
+    cid = int(parts[0])              # first token = callback display id
+    name = " ".join(parts[1:])       # rest = name (spaces allowed)
+    return cid, name
+
+
+async def run(entries):
+    client = await mythic.login(
+        username=USERNAME, password=PASSWORD,
+        server_ip=SERVER_IP, server_port=SERVER_PORT, ssl=True,
+    )
+
+    # snapshot current values so we can print "before"
+    callbacks = await mythic.get_all_active_callbacks(mythic=client)
+    current = {}
+    for cb in callbacks:
+        current[cb["display_id"]] = cb.get("ips") or cb.get("ip")
+
+    ok = 0
+    for cid, name in entries:
+        before = current.get(cid, "<not found / unknown>")
+        after = [name]
+        try:
+            await mythic.update_callback(
+                mythic=client,
+                callback_display_id=cid,
+                ips=after,
+            )
+            print(f"  #{cid}: {before} -> {after}")
+            ok += 1
+        except Exception as e:
+            print(f"  [FAILED] #{cid} ({before}): {e}")
+    print(f"done: {ok}/{len(entries)} changed")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Change the IP-column label of Mythic callbacks")
+    ap.add_argument("callback_id", nargs="?", type=int, help="callback display id")
+    ap.add_argument("name", nargs="?", help="name to show in the IP column")
+    ap.add_argument("-f", "--file", help="text file with 'id name' per line")
+    args = ap.parse_args()
+
+    entries = []
+    if args.file:
+        with open(args.file, encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, 1):
+                try:
+                    parsed = parse_line(line)
+                except ValueError as e:
+                    print(f"  [skip] line {lineno}: {e}")
+                    continue
+                if parsed:
+                    entries.append(parsed)
+    elif args.callback_id is not None and args.name is not None:
+        entries.append((args.callback_id, args.name))
+    else:
+        ap.error("pass 'id name' as arguments, or use -f FILE")
+
+    if not entries:
+        print("nothing to do")
+        return
+    asyncio.run(run(entries))
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+使いかた
+
+python3 rename_ip.py 5 jump-box
+
+python3 rename_ip.py -f names.txt
+
+  #5: ['192.168.45.169'] -> ['jump-box']
+  #6: ['192.168.45.169'] -> ['web-dmz']
+done: 2/2 changed
