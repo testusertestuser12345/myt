@@ -1,0 +1,15 @@
+1. "strings" パッケージのインポート追加
+args 文字列を空白で分割するために、標準ライブラリの strings を追加しました
+
+import (
+	// Standard
+	"encoding/base64"
+	"fmt"
+	"strings" // ← 追加
+
+job.Args への引数追加処理の変更
+args をそのまま1要素として追加するのではなく、strings.Fields(args)... で空白区切りのスライスに分割・展開して追加するように変更しました
+
+if args != "" {
+		job.Args = append(job.Args, strings.Fields(args)...) // ← 変更（以前は append(job.Args, args)）
+	}
